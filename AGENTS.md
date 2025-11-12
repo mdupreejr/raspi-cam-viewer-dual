@@ -1,10 +1,12 @@
 # Agent Development Guidelines
 
 ## Build/Test Commands
-- **Run main script**: `python3 frigate_vlc_player.py`
-- **Install dependencies**: Dependencies auto-install via script (paho-mqtt)
-- **Test single function**: Use `python3 -c "from script import function; function()"`
-- **Virtual environment**: `python3 -m venv frigate-vlc-env && source frigate-vlc-env/bin/activate`
+- **Deploy to raspi**: `./deploy.sh` (from project root)
+- **Run main script**: `cd ~/.raspi-cam-view-dual && python3 src/frigate_vlc_player.py`
+- **Install dependencies**: `pip3 install -r requirements.txt`
+- **Test single function**: Use `python3 -c "from src.script import function; function()"`
+- **Virtual environment**: `python3 -m venv venv && source venv/bin/activate`
+- **Clean up raspi**: `./cleanup_raspi.sh` (removes scattered files from raspi)
 
 ## Code Style Guidelines
 - **Python Version**: Python 3.7+
