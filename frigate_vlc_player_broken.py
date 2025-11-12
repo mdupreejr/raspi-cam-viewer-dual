@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import subprocess
+import signal
+import json
+import time
+import logging
+import re
+
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    print("Installing required package: paho-mqtt...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "paho-mqtt"])
+    import paho.mqtt.client as mqtt
+
+# Configuration
+MQTT_HOST = os.environ.get("FRIGATE_MQTT_HOST", "fl7")
+MQTT_PORT = int(os.environ.get("FRIGATE_MQTT_PORT", "1883"))
+MQTT_TOPIC = os.environ.get("FRIGATE_MQTT_TOPIC", "frigate/events")
+RTSP_BASE = os.environ.get("FRIGATE_RTSP_BASE", f"rtsp://{MQTT_HOST}:8554")
+VLC_DISPLAY = os.environ.get("DISPLAY", ":0")
+
+# Default camera to show when no detections
+DEFAULT_CAMERA_FILE = os.path.expanduser("~/Desktop/default_camera.txt")
+DEFAULT_CAMERA = "GL-FrontDoor"  # fallback
+
+DETECTION_PRIORITIES = {
+    "person": 10,
+    "dog": 8,
+    "cat": 7,
+    "bird": 6,
+    "car": 5,
+    "motorcycle": 4,
+    "bicycle": 3,
+    "default": 1
+}
+
+IGNORED_CAMERAS_FILE = os.path.expanduser("~/Desktop/ignored_cameras.txt")
+PRIORITIES_FILE = os.path.expanduser("~/Desktop/detection_priorities.txt")
+LOG_FILE = os.path.expanduser("~/vlc_activity.log")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(), logging.FileHandler(LOG_FILE)]
+)
+logger = logging.getLogger(__name__)
+
+class FrigateVLCPlayer:
+    def __init__(self):
+        self.mqtt_client = mqtt.Client()
+        self.vlc_process = None
+        self.current_camera = None
+        self.current_priority = 0
+        self.ignored_cameras = set()
+        self.last_detection_time = 0
+        self.detection_timeout = 30  # Return to default camera after 30 seconds
+        self.load_ignored_cameras()
+        self.load_priorities()
+        self.load_default_camera()
+        
+    def load_ignored_cameras(self):
+        self.ignored_cameras = set()
+        if os.path.exists(IGNORED_CAMERAS_FILE):
+            try:
+                with open(IGNORED_CAMERAS_FILE, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            self.ignored_cameras.add(line.lower())
+                if self.ignored_cameras:
+                    logger.info(f"Loaded ignored cameras: {', '.join(sorted(self.ignored_cameras))}")
+            except Exception as e:
+                logger.warning(f"Could not load ignored cameras file: {e}")
+        
+    def load_priorities(self):
+    
+    def load_default_camera(self):
+        """Load default camera from file"""
+        global DEFAULT_CAMERA
+        if os.path.exists(DEFAULT_CAMERA_FILE):
+            try:
+                with open(DEFAULT_CAMERA_FILE, "r") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            DEFAULT_CAMERA = line
+                            logger.info(f"Loaded default camera: {DEFAULT_CAMERA}")
+                            break
+            except Exception as e:
+                logger.warning(f"Could not load default camera file: {e}")
+        global DETECTION_PRIORITIES
+        if os.path.exists(PRIORITIES_FILE):
+            try:
+                with open(PRIORITIES_FILE, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#') and '=' in line:
+                            label, priority = line.split('=', 1)
+                            try:
+                                DETECTION_PRIORITIES[label.strip().lower()] = int(priority.strip())
+                            except ValueError:
+                                pass
+            except Exception as e:
+                logger.warning(f"Could not load priorities file: {e}")
+    
+    def on_connect(self, client, userdata, flags, rc):
+        if rc == 0:
+            logger.info(f"Connected to MQTT broker at {MQTT_HOST}:{MQTT_PORT}")
+            client.subscribe(MQTT_TOPIC)
+            logger.info(f"Subscribed to topic: {MQTT_TOPIC}")
+            # Start showing default camera after connection
+            logger.info(f"Starting default camera view: {DEFAULT_CAMERA}")
+            self.play_camera(DEFAULT_CAMERA, priority=0, is_default=True)
+        else:
+            logger.error(f"Failed to connect to MQTT broker. Code: {rc}")
+    
+    def on_disconnect(self, client, userdata, rc):
+        if rc != 0:
+            logger.warning(f"Unexpected MQTT disconnection. Code: {rc}")
+            logger.info("Attempting to reconnect...")
+    
+    def on_message(self, client, userdata, msg):
+        try:
+            data = json.loads(msg.payload.decode())
+            
+            if data.get('type') != 'new':
+                return
+            
+            after = data.get('after', {})
+            camera = after.get('camera')
+            label = after.get('label', 'unknown')
+            
+            if not camera:
+                logger.warning("No camera found in event data")
+                return
+            
+            if camera.lower() in self.ignored_cameras:
+                logger.info(f"Ignoring detection on camera '{camera}' (in ignore list)")
+                return
+            
+            priority = DETECTION_PRIORITIES.get(label.lower(), DETECTION_PRIORITIES.get('default', 1))
+            logger.info(f"New detection: {label} on camera '{camera}'")
+            
+            # Update last detection time
+            self.last_detection_time = time.time()
+            
+            # Play the detected camera
+            self.play_camera(camera, priority)
+            
+            # Start timer to return to default camera
+            self.schedule_return_to_default()
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse MQTT message: {e}")
+        except Exception as e:
+            logger.error(f"Error processing MQTT message: {e}")
+    
+    def schedule_return_to_default(self):
+        """Schedule return to default camera after timeout"""
+        # This is a simple approach - in production you might want a proper timer
+        pass
+    
+    def check_return_to_default(self):
+        """Check if we should return to default camera"""
+        if self.last_detection_time > 0:
+            if time.time() - self.last_detection_time > self.detection_timeout:
+                if self.current_camera != DEFAULT_CAMERA:
+                    logger.info(f"No detections for {self.detection_timeout} seconds, returning to default camera")
+                    self.play_camera(DEFAULT_CAMERA, priority=0, is_default=True)
+                    self.last_detection_time = 0
+    
+    def format_camera_for_rtsp(self, camera_name):
+        # Special case for GL-FrontDoor -> gr_frontdoor
+        if camera_name.lower() == 'gl-frontdoor':
+            return 'gr_frontdoor'
+        formatted = camera_name.replace('-', '_').lower()
+        return formatted
+    
+    def play_camera(self, camera, priority=1, is_default=False):
+        # Don't restart if already showing this camera (unless it's a new detection)
+        if self.current_camera == camera and not is_default and priority > 0:
+            logger.info(f"Camera '{camera}' is already playing")
+            return
+            
+        rtsp_camera = self.format_camera_for_rtsp(camera)
+        rtsp_url = f"{RTSP_BASE}/{rtsp_camera}"
+        
+        if is_default:
+            logger.info(f"Playing default stream: {rtsp_url} (camera: {camera})")
+        else:
+            logger.info(f"Playing detected stream: {rtsp_url} (camera: {camera})")
+        
+        self.stop_vlc()
+        
+        try:
+            # Use optimized settings for Pi 5
+            vlc_cmd = [
+                "cvlc",
+                "--fullscreen",
+                "--loop",
+                "--no-video-title-show",
+                "--network-caching=1000",
+                "--file-caching=1000",
+                "--live-caching=1000",
+                "--clock-jitter=0",
+                "--drop-late-frames",
+                "--skip-frames",
+                rtsp_url
+            ]
+            
+            env = os.environ.copy()
+            env["DISPLAY"] = VLC_DISPLAY
+            
+            self.vlc_process = subprocess.Popen(
+                vlc_cmd,
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            
+            self.current_camera = camera
+            self.current_priority = priority
+            logger.info(f"VLC started for camera '{camera}' (PID: {self.vlc_process.pid})")
+            
+        except Exception as e:
+            logger.error(f"Failed to start VLC: {e}")
+            self.vlc_process = None
+            self.current_camera = None
+    
+    def stop_vlc(self):
+        if self.vlc_process and self.vlc_process.poll() is None:
+            logger.info(f"Stopping VLC (PID: {self.vlc_process.pid})")
+            try:
+                self.vlc_process.terminate()
+                self.vlc_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning("VLC did not terminate, forcing kill")
+                self.vlc_process.kill()
+                self.vlc_process.wait()
+            self.vlc_process = None
+            self.current_camera = None
+            self.current_priority = 0
+    
+    def run(self):
+        logger.info("=== Frigate VLC Player Starting ===")
+        logger.info(f"MQTT Broker: {MQTT_HOST}:{MQTT_PORT}")
+        logger.info(f"MQTT Topic: {MQTT_TOPIC}")
+        logger.info(f"RTSP Base: {RTSP_BASE}")
+        logger.info(f"Display: {VLC_DISPLAY}")
+        logger.info(f"Default Camera: {DEFAULT_CAMERA}")
+        logger.info(f"Ignored Cameras File: {IGNORED_CAMERAS_FILE}")
+        logger.info("===================================")
+        
+        self.mqtt_client.on_connect = self.on_connect
+        self.mqtt_client.on_disconnect = self.on_disconnect
+        self.mqtt_client.on_message = self.on_message
+        
+        logger.info(f"Connecting to MQTT broker at {MQTT_HOST}:{MQTT_PORT}")
+        self.mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
+        
+        # Start the MQTT loop in a non-blocking way
+        self.mqtt_client.loop_start()
+        
+        # Keep checking if we should return to default camera
+        try:
+            while True:
+                time.sleep(5)
+                self.check_return_to_default()
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user")
+        finally:
+            self.mqtt_client.loop_stop()
+    
+    def cleanup(self):
+        logger.info("Cleaning up...")
+        self.stop_vlc()
+        if self.mqtt_client:
+            self.mqtt_client.disconnect()
+        logger.info("Cleanup complete")
+
+def signal_handler(signum, frame):
+    logger.info(f"Received signal {signum}")
+    if 'player' in globals():
+        player.cleanup()
+    sys.exit(0)
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    player = FrigateVLCPlayer()
+    
+    try:
+        player.run()
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+    except Exception as e:
+        logger.error(f"Error in main loop: {e}")
+    finally:
+        player.cleanup()
