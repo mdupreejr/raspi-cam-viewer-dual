@@ -1,0 +1,55 @@
+# Log files
+*.log
+logs/
+
+# Configuration files with potentially sensitive info
+default_camera.txt
+ignored_cameras.txt
+detection_priorities.txt
+
+# Python virtual environments
+frigate-vlc-env/
+venv/
+env/
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Backup files
+*.backup
+*.backup*
+*_backup.py
+*_broken.py
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.temp
+
+# SSH keys and sensitive configs
+*.key
+*.pem
+config/secrets/
+
+# Template directories that might be empty
+Templates/
+Videos/

@@ -1,0 +1,14 @@
+# Frigate VLC Viewer - Ignored Cameras Configuration
+# 
+# List camera names (one per line) that should be ignored for detections.
+# Lines starting with # are comments and will be ignored.
+# Camera names should match exactly as they appear in Frigate.
+# 
+# Example:
+# Attic
+# Closet-Back
+# Servers
+#
+# Copy this file to ignored_cameras.txt and add your cameras below:
+
+# Add ignored cameras here (one per line)

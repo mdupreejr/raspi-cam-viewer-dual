@@ -1,0 +1,14 @@
+# Frigate Detection Priorities Configuration
+# 
+# Format: label=priority_number
+# Higher numbers = higher priority
+# Copy this file to detection_priorities.txt and customize
+
+person=10
+dog=8
+cat=7
+bird=6
+car=5
+motorcycle=4
+bicycle=3
+default=1
